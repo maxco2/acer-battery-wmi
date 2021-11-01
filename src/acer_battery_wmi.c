@@ -12,6 +12,7 @@ MODULE_AUTHOR("Copyright 2021 maxc@stateoftheart.pw");
 MODULE_LICENSE("GPL v2");
 
 #define ACER_BATTERY_GUID "79772EC5-04B1-4BFD-843C-61E7F77B6CC9"
+MODULE_ALIAS("wmi:79772EC5-04B1-4BFD-843C-61E7F77B6CC9");
 
 struct SetBatteryControlIn {
   u8 uBatteryNo;
