@@ -2,6 +2,8 @@
 
 This repo is a Linux Acer battery health control driver. This kernel module brings windows Acer Care Center battery health control mode to Linux.
 
+**Please confirm that you have a matching WMI method on your device. Take a look [issue#1](https://github.com/maxco2/acer-battery-wmi/issues/1) for further information.**
+
 # Install kernel modules
 
 For general Linux users:
