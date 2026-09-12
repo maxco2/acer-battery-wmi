@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
+#include <linux/version.h>
 
 MODULE_DESCRIPTION("Support Acer Battery Health Control");
 MODULE_AUTHOR("Copyright 2021 maxc@stateoftheart.pw");
@@ -158,9 +159,15 @@ static struct attribute *acer_battery_attrs[] = {&acer_battery_health.attr,
 static const struct attribute_group platform_attribute_group = {
     .name = "acer_battery", .attrs = acer_battery_attrs};
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void acer_battery_wmi_remove(struct platform_device *device) {
+#else
 static int acer_battery_wmi_remove(struct platform_device *device) {
+#endif
   sysfs_remove_group(&platform_device->dev.kobj, &platform_attribute_group);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
   return 0;
+#endif
 }
 
 static int __init acer_battery_wmi_probe(struct platform_device *pdev) {

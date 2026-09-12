@@ -24,6 +24,19 @@ sudo pacman -U acer-battery-wmi-0.1-1-x86_64.pkg.tar.zst
 # reboot
 ````
 
+To package local changes with the updated DKMS PKGBUILD, set the absolute
+path to this checkout (otherwise the PKGBUILD downloads GitHub sources):
+
+```bash
+cd /path/to/acer-battery-wmi-dkms
+ACER_BATTERY_WMI_SRC=/path/to/acer-battery-wmi makepkg -f
+sudo pacman -U acer-battery-wmi-0.1-3-x86_64.pkg.tar.zst
+```
+
+Install the headers matching your target kernel before installing the package.
+The driver supports both the old platform remove callback and the void callback
+used by Linux 6.11 and newer.
+
 # Check or update battery health mode
 
 If health mode is 1, the charging threshold limit is activated. Otherwise, it means the charging threshold limit is deactivated. 
