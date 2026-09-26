@@ -4,6 +4,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/version.h>
@@ -49,6 +50,9 @@ static struct platform_device *platform_device;
  */
 static u8 health_mode_val = 0xFF;
 
+/* Serializes WMI access and health_mode_val updates. */
+static DEFINE_MUTEX(acer_battery_lock);
+
 static acpi_status acer_battery_wmi_exec_method(u8 val) {
   acpi_status status;
   union acpi_object *obj;
@@ -79,6 +83,12 @@ static acpi_status acer_battery_wmi_exec_method(u8 val) {
     return AE_ERROR;
   }
   out = (struct SetBatteryControlOut *)(obj->buffer.pointer);
+  if (out->uReturn != 0) {
+    pr_err("Firmware rejected battery health mode %d, ret was 0x%x\n", val,
+           out->uReturn);
+    kfree(output.pointer);
+    return AE_ERROR;
+  }
   printk("Setting battery health status success! Status was %d ret was 0x%x "
          "(%d)\n",
          status, out->uReturn, out->uReturn);
@@ -135,9 +145,14 @@ static ssize_t acer_battery_show_save_mode(struct device *dev,
                                            struct device_attribute *attr,
                                            char *buf) {
   u8 healthStatus;
-  if (acer_battery_wmi_query_health_status(&healthStatus) != 0)
+  int ret;
+  mutex_lock(&acer_battery_lock);
+  ret = acer_battery_wmi_query_health_status(&healthStatus);
+  if (ret == 0)
+    health_mode_val = healthStatus;
+  mutex_unlock(&acer_battery_lock);
+  if (ret != 0)
     return -ENODEV;
-  health_mode_val = healthStatus;
   return sprintf(buf, "%d\n", healthStatus);
 }
 
@@ -149,9 +164,13 @@ static ssize_t acer_battery_store_save_mode(struct device *dev,
     return -EINVAL;
   if ((val != 0) && (val != 1))
     return -EINVAL;
-  if (acer_battery_wmi_exec_method(val) != AE_OK)
+  mutex_lock(&acer_battery_lock);
+  if (acer_battery_wmi_exec_method(val) != AE_OK) {
+    mutex_unlock(&acer_battery_lock);
     return -ENODEV;
+  }
   health_mode_val = val;
+  mutex_unlock(&acer_battery_lock);
   return count;
 }
 
@@ -178,32 +197,43 @@ static int acer_battery_wmi_remove(struct platform_device *device) {
 
 static int __init acer_battery_wmi_probe(struct platform_device *pdev) {
   u8 health_status;
+  int ret;
   if (!wmi_has_guid(ACER_BATTERY_GUID)) {
     pr_err("no acer battery WMI guid\n");
     return -ENODEV;
   }
 
   /* Cache the current health mode so it can be restored on resume. */
-  if (acer_battery_wmi_query_health_status(&health_status) == 0)
+  mutex_lock(&acer_battery_lock);
+  ret = acer_battery_wmi_query_health_status(&health_status);
+  if (ret == 0)
     health_mode_val = health_status;
+  mutex_unlock(&acer_battery_lock);
 
   return sysfs_create_group(&pdev->dev.kobj, &platform_attribute_group);
 }
 
 static int acer_battery_wmi_resume(struct device *dev) {
-  /* The EC may not keep the health mode over a sleep cycle, re-apply it. */
+  /*
+   * The EC may not keep the health mode over a sleep cycle, re-apply it.
+   * Registered as .resume, .thaw and .restore to also cover hibernation.
+   */
   if (health_mode_val != 0xFF) {
+    mutex_lock(&acer_battery_lock);
     if (acer_battery_wmi_exec_method(health_mode_val) != AE_OK)
       pr_err("Failed to re-apply battery health mode after resume\n");
     else
       printk("Battery health mode %d re-applied after resume\n",
              health_mode_val);
+    mutex_unlock(&acer_battery_lock);
   }
   return 0;
 }
 
 static const struct dev_pm_ops acer_battery_wmi_pm_ops = {
-    .resume = acer_battery_wmi_resume};
+    .resume = acer_battery_wmi_resume,
+    .thaw = acer_battery_wmi_resume,
+    .restore = acer_battery_wmi_resume};
 
 static int __init acer_battery_wmi_init(void) {
   platform_driver.remove = acer_battery_wmi_remove;
