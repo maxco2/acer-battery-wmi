@@ -79,7 +79,7 @@ static acpi_status acer_battery_wmi_exec_method(u8 val) {
     kfree(output.pointer);
     pr_err("Unexpected output format setting battery health status, buffer "
            "length:%d\n",
-           obj->buffer.length);
+           obj ? obj->buffer.length : 0);
     return AE_ERROR;
   }
   out = (struct SetBatteryControlOut *)(obj->buffer.pointer);
@@ -121,7 +121,7 @@ static int acer_battery_wmi_query_health_status(u8 *health_status) {
     goto out;
   }
   out = (struct GetBatteryControlOut *)(obj->buffer.pointer);
-  if (out->uReturn[0] > 0)
+  if (out->uReturn[0] > 0 || out->uReturn[1] > 0)
     goto out;
   switch (out->uFunctionList) {
   case 1:
@@ -218,15 +218,15 @@ static int acer_battery_wmi_resume(struct device *dev) {
    * The EC may not keep the health mode over a sleep cycle, re-apply it.
    * Registered as .resume, .thaw and .restore to also cover hibernation.
    */
+  mutex_lock(&acer_battery_lock);
   if (health_mode_val != 0xFF) {
-    mutex_lock(&acer_battery_lock);
     if (acer_battery_wmi_exec_method(health_mode_val) != AE_OK)
       pr_err("Failed to re-apply battery health mode after resume\n");
     else
       printk("Battery health mode %d re-applied after resume\n",
              health_mode_val);
-    mutex_unlock(&acer_battery_lock);
   }
+  mutex_unlock(&acer_battery_lock);
   return 0;
 }
 
