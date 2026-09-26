@@ -42,6 +42,13 @@ struct GetBatteryControlOut {
 static struct platform_driver platform_driver;
 static struct platform_device *platform_device;
 
+/*
+ * Cached health mode, re-applied after resume because the EC may drop the
+ * setting over a sleep cycle. 0xFF means "unknown", set on first read, write
+ * or probe.
+ */
+static u8 health_mode_val = 0xFF;
+
 static acpi_status acer_battery_wmi_exec_method(u8 val) {
   acpi_status status;
   union acpi_object *obj;
@@ -79,14 +86,12 @@ static acpi_status acer_battery_wmi_exec_method(u8 val) {
   return AE_OK;
 }
 
-static ssize_t acer_battery_show_save_mode(struct device *dev,
-                                           struct device_attribute *attr,
-                                           char *buf) {
+static int acer_battery_wmi_query_health_status(u8 *health_status) {
   acpi_status status;
   union acpi_object *obj;
   struct GetBatteryControlIn in;
   struct GetBatteryControlOut *out;
-  u8 healthMode, calibrationMode, healthStatus, calibrationStatus;
+  int ret = -ENODEV;
   in.uBatteryNo = 1;
   in.uFunctionQuery = 1;
   in.uReserved = 0;
@@ -102,38 +107,38 @@ static ssize_t acer_battery_show_save_mode(struct device *dev,
   if (!obj || obj->type != ACPI_TYPE_BUFFER || obj->buffer.length != 8) {
     pr_err("Unexpected output format getting battery health status, buffer "
            "length:%d\n",
-           obj->buffer.length);
-    goto failed;
+           obj ? obj->buffer.length : 0);
+    goto out;
   }
-  out = (struct GetBatteryControlOut *)(struct SetBatteryControlOut
-                                            *)(obj->buffer.pointer);
-  if (out->uReturn[0] > 0) {
-    goto failed;
-  }
+  out = (struct GetBatteryControlOut *)(obj->buffer.pointer);
+  if (out->uReturn[0] > 0)
+    goto out;
   switch (out->uFunctionList) {
   case 1:
-    healthMode = 1;
-    healthStatus = out->uFunctionStatus[0] > 0;
+  case 3:
+    *health_status = out->uFunctionStatus[0] > 0;
+    ret = 0;
     break;
   case 2:
-    calibrationMode = 2;
-    calibrationStatus = out->uFunctionStatus[1] > 0;
-    break;
-  case 3:
-    healthMode = 1;
-    calibrationMode = 2;
-    healthStatus = out->uFunctionStatus[0] > 0;
-    calibrationStatus = out->uFunctionStatus[1] > 0;
-    break;
+    /* Only calibration mode is available, no battery health control. */
   default:
-    goto failed;
+    break;
   }
-  printk("Getting battery health status success!\n");
+out:
   kfree(output.pointer);
+  if (ret == 0)
+    printk("Getting battery health status success!\n");
+  return ret;
+}
+
+static ssize_t acer_battery_show_save_mode(struct device *dev,
+                                           struct device_attribute *attr,
+                                           char *buf) {
+  u8 healthStatus;
+  if (acer_battery_wmi_query_health_status(&healthStatus) != 0)
+    return -ENODEV;
+  health_mode_val = healthStatus;
   return sprintf(buf, "%d\n", healthStatus);
-failed:
-  kfree(output.pointer);
-  return -ENODEV;
 }
 
 static ssize_t acer_battery_store_save_mode(struct device *dev,
@@ -146,6 +151,7 @@ static ssize_t acer_battery_store_save_mode(struct device *dev,
     return -EINVAL;
   if (acer_battery_wmi_exec_method(val) != AE_OK)
     return -ENODEV;
+  health_mode_val = val;
   return count;
 }
 
@@ -171,15 +177,30 @@ static int acer_battery_wmi_remove(struct platform_device *device) {
 }
 
 static int __init acer_battery_wmi_probe(struct platform_device *pdev) {
+  u8 health_status;
   if (!wmi_has_guid(ACER_BATTERY_GUID)) {
     pr_err("no acer battery WMI guid\n");
     return -ENODEV;
   }
 
+  /* Cache the current health mode so it can be restored on resume. */
+  if (acer_battery_wmi_query_health_status(&health_status) == 0)
+    health_mode_val = health_status;
+
   return sysfs_create_group(&pdev->dev.kobj, &platform_attribute_group);
 }
 
-static int acer_battery_wmi_resume(struct device *dev) { return 0; }
+static int acer_battery_wmi_resume(struct device *dev) {
+  /* The EC may not keep the health mode over a sleep cycle, re-apply it. */
+  if (health_mode_val != 0xFF) {
+    if (acer_battery_wmi_exec_method(health_mode_val) != AE_OK)
+      pr_err("Failed to re-apply battery health mode after resume\n");
+    else
+      printk("Battery health mode %d re-applied after resume\n",
+             health_mode_val);
+  }
+  return 0;
+}
 
 static const struct dev_pm_ops acer_battery_wmi_pm_ops = {
     .resume = acer_battery_wmi_resume};
